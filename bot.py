@@ -1,25 +1,14 @@
 import os
 import re
+import io
 import asyncio
 import discord
+
 from discord.ext import commands
 from discord import app_commands
+
 from flask import Flask
 from threading import Thread
-
-app = Flask(__name__)
-
-@app.route("/")
-def home():
-    return "Bot online!"
-
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
-def keep_alive():
-    thread = Thread(target=run_web)
-    thread.start()
 
 
 # =========================================================
@@ -27,6 +16,28 @@ def keep_alive():
 # =========================================================
 
 ROLE_SLUJBA_ID = 1541403780866646106
+GUILD_ID = 1526909089664471141
+
+
+# =========================================================
+# SERVER WEB PENTRU RENDER
+# =========================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Bot online!"
+
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
+def keep_alive():
+    Thread(target=run_web, daemon=True).start()
 
 
 # =========================================================
@@ -48,7 +59,6 @@ bot = commands.Bot(
 
 class SlujbaView(discord.ui.View):
     def __init__(self):
-        # timeout=None => persistent
         super().__init__(timeout=None)
 
     @discord.ui.button(
@@ -62,8 +72,6 @@ class SlujbaView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
-        # Verificăm embed-ul mesajului
         if not interaction.message.embeds:
             await interaction.response.send_message(
                 "❌ Nu am putut identifica slujba.",
@@ -72,8 +80,6 @@ class SlujbaView(discord.ui.View):
             return
 
         embed = interaction.message.embeds[0]
-
-        # ID-ul persoanei care a creat slujba este salvat în footer
         footer_text = embed.footer.text or ""
 
         match = re.search(r"Autor ID: (\d+)", footer_text)
@@ -87,7 +93,6 @@ class SlujbaView(discord.ui.View):
 
         autor_id = int(match.group(1))
 
-        # Doar cel care a creat slujba poate apăsa
         if interaction.user.id != autor_id:
             await interaction.response.send_message(
                 "❌ Doar persoana care a început această slujbă o poate încheia.",
@@ -96,19 +101,13 @@ class SlujbaView(discord.ui.View):
             return
 
         await interaction.response.send_message(
-            "📸 **Trimite acum o poză în acest canal.**\n\n"
-            "Poți:\n"
-            "• să dai copy-paste la imagine\n"
-            "• să o tragi în Discord\n"
-            "• să o trimiți ca fișier\n\n"
+            "📸 Trimite acum o poză în acest canal.\n\n"
+            "Poți da copy-paste la imagine, o poți trage în Discord "
+            "sau o poți trimite ca fișier.\n\n"
             "Ai **2 minute** la dispoziție.",
             ephemeral=True
         )
 
-        # Verificăm ca mesajul să fie:
-        # - de la aceeași persoană
-        # - în același canal
-        # - să conțină attachment
         def check(message: discord.Message):
             return (
                 message.author.id == interaction.user.id
@@ -122,7 +121,6 @@ class SlujbaView(discord.ui.View):
                 timeout=120,
                 check=check
             )
-
         except asyncio.TimeoutError:
             await interaction.followup.send(
                 "⏰ Timpul a expirat. Apasă din nou pe **Încheiere slujbă**.",
@@ -130,22 +128,18 @@ class SlujbaView(discord.ui.View):
             )
             return
 
-        # Căutăm prima imagine
         poza = None
 
         for attachment in mesaj_poza.attachments:
-
-            if attachment.content_type:
-                if attachment.content_type.startswith("image/"):
-                    poza = attachment
-                    break
-
-            # fallback dacă Discord nu trimite content_type
-            nume = attachment.filename.lower()
-
-            if nume.endswith(
-                (".png", ".jpg", ".jpeg", ".webp", ".gif")
+            if (
+                attachment.content_type
+                and attachment.content_type.startswith("image/")
             ):
+                poza = attachment
+                break
+
+            nume = attachment.filename.lower()
+            if nume.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
                 poza = attachment
                 break
 
@@ -157,17 +151,26 @@ class SlujbaView(discord.ui.View):
             )
             return
 
-        # =====================================================
-        # MODIFICĂM EMBED-UL
-        # =====================================================
+        # Descărcăm poza înainte să ștergem mesajul utilizatorului.
+        try:
+            poza_bytes = await poza.read()
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "❌ Nu am reușit să descarc poza. Încearcă din nou.",
+                ephemeral=True
+            )
+            return
+
+        fisier = discord.File(
+            io.BytesIO(poza_bytes),
+            filename=poza.filename
+        )
 
         embed.color = discord.Color.green()
 
-        # Schimbăm statusul
         status_gasit = False
 
         for index, field in enumerate(embed.fields):
-
             if field.name == "Status":
                 embed.set_field_at(
                     index,
@@ -175,7 +178,6 @@ class SlujbaView(discord.ui.View):
                     value="✅ Slujbă încheiată",
                     inline=False
                 )
-
                 status_gasit = True
                 break
 
@@ -186,59 +188,72 @@ class SlujbaView(discord.ui.View):
                 inline=False
             )
 
-        # Adăugăm poza
-        embed.set_image(url=poza.url)
-
-        # Timpul încheierii
         embed.add_field(
             name="🕐 Încheiată",
             value=f"<t:{int(discord.utils.utcnow().timestamp())}:F>",
             inline=False
         )
 
-        # Dezactivăm butonul
+        embed.set_image(
+            url=f"attachment://{poza.filename}"
+        )
+
         button.disabled = True
         button.label = "Slujbă încheiată"
         button.style = discord.ButtonStyle.secondary
 
-        await interaction.message.edit(
-            embed=embed,
-            view=self
-        )
+        try:
+            await interaction.message.edit(
+                embed=embed,
+                view=self,
+                attachments=[fisier]
+            )
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "❌ Nu am reușit să actualizez mesajul slujbei.",
+                ephemeral=True
+            )
+            return
+
+        # Ștergem mesajul original care conținea poza.
+        try:
+            await mesaj_poza.delete()
+        except discord.Forbidden:
+            await interaction.followup.send(
+                "⚠️ Slujba a fost încheiată, dar nu pot șterge mesajul "
+                "cu poza. Botul are nevoie de permisiunea **Manage Messages**.",
+                ephemeral=True
+            )
+            return
+        except discord.HTTPException:
+            pass
 
         await interaction.followup.send(
-            "✅ Slujba a fost încheiată și poza a fost adăugată.",
+            "✅ Slujba a fost încheiată, poza a fost salvată în mesajul botului, "
+            "iar mesajul tău cu poza a fost șters.",
             ephemeral=True
         )
 
 
 # =========================================================
-# MODAL /SLUJBA
+# MODAL - CREARE SLUJBA
 # =========================================================
 
 class SlujbaModal(discord.ui.Modal):
-    def __init__(self):
-        super().__init__(
-            title="Creare slujbă"
-        )
+    def __init__(self, protos: discord.Member):
+        super().__init__(title="Creare slujbă")
+        self.protos = protos
 
     locatie = discord.ui.TextInput(
         label="Locație",
-        placeholder="Ex: Los Santos",
-        required=True,
-        max_length=100
-    )
-
-    protos = discord.ui.TextInput(
-        label="Protos",
-        placeholder="Ex: Numele / informația dorită",
+        placeholder="Ex: Catedrala",
         required=True,
         max_length=100
     )
 
     tip_slujba = discord.ui.TextInput(
         label="Tip Slujbă",
-        placeholder="Ex: Slujbă normală",
+        placeholder="Ex: Vecernie",
         required=True,
         max_length=100
     )
@@ -254,17 +269,9 @@ class SlujbaModal(discord.ui.Modal):
         self,
         interaction: discord.Interaction
     ):
-
-        # =====================================================
-        # EMBED
-        # =====================================================
-
         embed = discord.Embed(
             title="⛪ Slujbă nouă",
-            description=(
-                "A fost anunțată o nouă slujbă.\n"
-                "Detaliile sunt disponibile mai jos."
-            ),
+            description="A fost anunțată o nouă slujbă.",
             color=discord.Color.gold()
         )
 
@@ -275,8 +282,8 @@ class SlujbaModal(discord.ui.Modal):
         )
 
         embed.add_field(
-            name="📋 Protos",
-            value=self.protos.value,
+            name="👤 Protos",
+            value=self.protos.mention,
             inline=False
         )
 
@@ -303,27 +310,26 @@ class SlujbaModal(discord.ui.Modal):
             icon_url=interaction.user.display_avatar.url
         )
 
-        # Aici salvăm ID-ul creatorului
-        # Este folosit de buton pentru verificare
+        # Salvăm ID-ul creatorului pentru verificarea butonului.
         embed.set_footer(
             text=f"Autor ID: {interaction.user.id}"
         )
 
         view = SlujbaView()
 
-        # Răspuns ephemeral la comandă
         await interaction.response.send_message(
             "✅ Slujba a fost creată.",
             ephemeral=True
         )
 
-        # Mesaj public
         await interaction.channel.send(
             content="@here",
             embed=embed,
             view=view,
             allowed_mentions=discord.AllowedMentions(
-                everyone=True
+                everyone=True,
+                users=True,
+                roles=False
             )
         )
 
@@ -336,9 +342,13 @@ class SlujbaModal(discord.ui.Modal):
     name="slujba",
     description="Creează un anunț pentru o slujbă."
 )
-async def slujba(interaction: discord.Interaction):
-
-    # Comanda trebuie folosită pe server
+@app_commands.describe(
+    protos="Alege persoana care va fi Protos"
+)
+async def slujba(
+    interaction: discord.Interaction,
+    protos: discord.Member
+):
     if interaction.guild is None:
         await interaction.response.send_message(
             "❌ Această comandă poate fi folosită doar pe server.",
@@ -346,7 +356,6 @@ async def slujba(interaction: discord.Interaction):
         )
         return
 
-    # Căutăm rolul necesar
     rol = interaction.guild.get_role(ROLE_SLUJBA_ID)
 
     if rol is None:
@@ -356,7 +365,6 @@ async def slujba(interaction: discord.Interaction):
         )
         return
 
-    # Verificăm dacă utilizatorul are rolul
     if rol not in interaction.user.roles:
         await interaction.response.send_message(
             "❌ Nu ai permisiunea să folosești comanda `/slujba`.",
@@ -364,9 +372,105 @@ async def slujba(interaction: discord.Interaction):
         )
         return
 
-    # Deschidem formularul
     await interaction.response.send_modal(
-        SlujbaModal()
+        SlujbaModal(protos)
+    )
+
+
+# =========================================================
+# /MESAJ_ROL
+# =========================================================
+
+ROLE_MESAJ_PERMISSION_ID = 1541422525001506887
+
+
+@bot.tree.command(
+    name="mesaj_rol",
+    description="Trimite un mesaj privat tuturor persoanelor cu un anumit rol."
+)
+@app_commands.describe(
+    rol="Rolul persoanelor cărora vrei să le trimiți mesajul",
+    mesaj="Mesajul care va fi trimis în privat"
+)
+async def mesaj_rol(
+    interaction: discord.Interaction,
+    rol: discord.Role,
+    mesaj: str
+):
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ Această comandă poate fi folosită doar pe server.",
+            ephemeral=True
+        )
+        return
+
+    rol_permisiune = interaction.guild.get_role(ROLE_MESAJ_PERMISSION_ID)
+
+    if rol_permisiune is None:
+        await interaction.response.send_message(
+            "❌ Rolul de permisiune configurat nu există.",
+            ephemeral=True
+        )
+        return
+
+    if rol_permisiune not in interaction.user.roles:
+        await interaction.response.send_message(
+            "❌ Nu ai permisiunea să folosești această comandă.",
+            ephemeral=True
+        )
+        return
+
+    membri = [membru for membru in rol.members if not membru.bot]
+
+    if not membri:
+        await interaction.response.send_message(
+            f"⚠️ Nu am găsit niciun membru cu rolul {rol.mention}.",
+            ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        f"📨 Încep să trimit mesajul membrilor cu rolul {rol.mention}...",
+        ephemeral=True
+    )
+
+    trimise = 0
+    esuate = 0
+
+    for membru in membri:
+        try:
+            embed = discord.Embed(
+                title="📩 Mesaj nou",
+                description=mesaj,
+                color=discord.Color.blue()
+            )
+
+            embed.add_field(
+                name="Server",
+                value=interaction.guild.name,
+                inline=False
+            )
+
+            embed.set_footer(
+                text=f"Trimis de {interaction.user.display_name}"
+            )
+
+            await membru.send(embed=embed)
+            trimise += 1
+            await asyncio.sleep(0.5)
+
+        except discord.Forbidden:
+            esuate += 1
+
+        except discord.HTTPException:
+            esuate += 1
+
+    await interaction.followup.send(
+        f"✅ **Trimitere terminată!**\n\n"
+        f"👥 Rol: {rol.mention}\n"
+        f"📨 Mesaje trimise: **{trimise}**\n"
+        f"❌ Mesaje eșuate: **{esuate}**",
+        ephemeral=True
     )
 
 
@@ -379,7 +483,6 @@ async def slujba(interaction: discord.Interaction):
     description="Verifică dacă botul funcționează."
 )
 async def ping(interaction: discord.Interaction):
-
     latency = round(bot.latency * 1000)
 
     await interaction.response.send_message(
@@ -396,7 +499,6 @@ async def ping(interaction: discord.Interaction):
     description="Botul îți spune salut."
 )
 async def hello(interaction: discord.Interaction):
-
     await interaction.response.send_message(
         f"Salut, {interaction.user.mention}! 👋"
     )
@@ -408,54 +510,52 @@ async def hello(interaction: discord.Interaction):
 
 @bot.command()
 async def test(ctx):
-
-    await ctx.send(
-        "Botul funcționează! ✅"
-    )
+    await ctx.send("Botul funcționează! ✅")
 
 
 # =========================================================
-# READY
+# SETUP / SINCRONIZARE
 # =========================================================
 
 @bot.event
 async def on_ready():
-
     print(f"Bot conectat ca {bot.user}")
     print(f"ID: {bot.user.id}")
 
-    # Înregistrăm view-ul persistent.
-    # Astfel butonul poate continua să funcționeze și după restart.
+
+async def setup_bot():
+    # View persistent: butonul continuă să funcționeze și după restart.
     bot.add_view(SlujbaView())
 
+    guild = discord.Object(id=GUILD_ID)
+
     try:
-
-        synced = await bot.tree.sync()
+        bot.tree.copy_global_to(guild=guild)
+        synced = await bot.tree.sync(guild=guild)
 
         print(
-            f"Au fost sincronizate "
-            f"{len(synced)} comenzi slash."
+            f"Au fost sincronizate {len(synced)} comenzi "
+            f"pe serverul {GUILD_ID}."
         )
-
     except Exception as e:
-
-        print(
-            f"Eroare la sincronizarea comenzilor: {e}"
-        )
+        print(f"Eroare la sincronizarea comenzilor: {e}")
 
 
 # =========================================================
-# TOKEN
+# TOKEN / START
 # =========================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN nu a fost setat.")
 
-    raise RuntimeError(
-        "DISCORD_TOKEN nu a fost setat."
-    )
+
+async def main():
+    async with bot:
+        await setup_bot()
+        await bot.start(TOKEN)
 
 
 keep_alive()
-bot.run(TOKEN)
+asyncio.run(main())
