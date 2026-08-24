@@ -457,5 +457,5 @@ if not TOKEN:
     )
 
 
-bot.run(TOKEN)keep_alive()
+keep_alive()
 bot.run(TOKEN)
