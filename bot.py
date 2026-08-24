@@ -514,7 +514,7 @@ async def test(ctx):
 
 
 # =========================================================
-# SETUP / SINCRONIZARE
+# READY / SINCRONIZARE
 # =========================================================
 
 @bot.event
@@ -522,23 +522,27 @@ async def on_ready():
     print(f"Bot conectat ca {bot.user}")
     print(f"ID: {bot.user.id}")
 
-
-async def setup_bot():
-    # View persistent: butonul continuă să funcționeze și după restart.
+    # Înregistrăm butoanele persistente
     bot.add_view(SlujbaView())
 
     guild = discord.Object(id=GUILD_ID)
 
     try:
         bot.tree.copy_global_to(guild=guild)
-        synced = await bot.tree.sync(guild=guild)
+
+        synced = await bot.tree.sync(
+            guild=guild
+        )
 
         print(
             f"Au fost sincronizate {len(synced)} comenzi "
             f"pe serverul {GUILD_ID}."
         )
+
     except Exception as e:
-        print(f"Eroare la sincronizarea comenzilor: {e}")
+        print(
+            f"Eroare la sincronizarea comenzilor: {e}"
+        )
 
 
 # =========================================================
@@ -551,11 +555,5 @@ if not TOKEN:
     raise RuntimeError("DISCORD_TOKEN nu a fost setat.")
 
 
-async def main():
-    async with bot:
-        await setup_bot()
-        await bot.start(TOKEN)
-
-
 keep_alive()
-asyncio.run(main())
+bot.run(TOKEN)
